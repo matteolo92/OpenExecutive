@@ -1,0 +1,81 @@
+# OpenExecutive su Coolify — file da mettere nella ROOT del tuo fork
+# Build Pack: Docker Compose | Base Directory: /  | Compose file: /coolify-compose.yaml
+#
+# Differenze rispetto a docker/docker-compose.yml dell'upstream:
+#  - la UI usa l'immagine di produzione (docker/Dockerfile.ui, Next standalone)
+#    invece di `npm run dev` con bind-mount
+#  - nessun `ports:` pubblicato sull'host: espone solo la UI tramite il proxy Coolify
+#  - healthcheck dell'API senza curl (non è presente in python:3.11-slim)
+#  - tutte le chiavi passano da ${VAR} così Coolify le mostra nella UI
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    # Percorsi fissi sul volume persistente
+    environment:
+      - VECTOR_STORE_PATH=/data/chroma_db
+      - COMPANY_PROFILE_PATH=/data/company/profile.yaml
+      - EPISODIC_DB_PATH=/data/episodic_memory.db
+      - MCP_SERVERS_CONFIG_PATH=/data/company/mcp_servers.json
+      - WORKSPACE_MCP_CREDENTIALS_DIR=/data/google_credentials
+      - WORKSPACE_MCP_TOOL_TIER=complete
+      - SCHEDULER_ENABLED=true
+      - ENABLE_CACHING=true
+      # --- da compilare in Coolify ---
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - BACKEND_SHARED_SECRET=${BACKEND_SHARED_SECRET}
+      - BACKEND_ALLOWED_ORIGINS=${BACKEND_ALLOWED_ORIGINS}
+      - EXEC_EMAIL_ADDRESS=${EXEC_EMAIL_ADDRESS}
+      # --- opzionali, con default upstream ---
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-claude-sonnet-4-6}
+      - DEEP_REASONING_MODEL=${DEEP_REASONING_MODEL:-claude-opus-4-7}
+      - ROUTING_MODEL=${ROUTING_MODEL:-claude-haiku-4-5-20251001}
+      - ENABLE_WEB_SEARCH=${ENABLE_WEB_SEARCH:-false}
+    volumes:
+      - executive-data:/data
+    healthcheck:
+      # python:3.11-slim NON ha curl: l'healthcheck originale fallirebbe sempre
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      # il primo boot costruisce l'indice vettoriale: serve margine
+      start_period: 300s
+
+  ui:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.ui
+    restart: unless-stopped
+    environment:
+      # In alternativa al dominio impostato dalla UI di Coolify, scommenta:
+      # - SERVICE_FQDN_UI_3000
+      - NODE_ENV=production
+      # DNS interno dello stack: mai l'URL pubblico (hairpin NAT)
+      - BACKEND_BASE_URL=http://api:8000
+      - AUTH_TRUST_HOST=true
+      # --- da compilare in Coolify ---
+      - AUTH_URL=${AUTH_URL}
+      - AUTH_SECRET=${AUTH_SECRET}
+      - AUTH_GOOGLE_ID=${AUTH_GOOGLE_ID}
+      - AUTH_GOOGLE_SECRET=${AUTH_GOOGLE_SECRET}
+      - ALLOWED_EMAILS=${ALLOWED_EMAILS}
+      - BACKEND_SHARED_SECRET=${BACKEND_SHARED_SECRET}
+    depends_on:
+      - api
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3000/signin"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  executive-data:
